@@ -19,21 +19,110 @@ val sdkDir = providers.gradleProperty("sdk.dir")
             .orEmpty()
     })
 
-val androidJar = sdkDir.map { "$it/platforms/android-35/android.jar" }
-val buildToolsDir = sdkDir.map { "$it/build-tools/37.0.0" }
-val d8Executable = buildToolsDir.map { "$it/d8.bat" }
-val cmakeExecutable = sdkDir.map { "$it/cmake/3.22.1/bin/cmake.exe" }
-val ninjaExecutable = sdkDir.map { "$it/cmake/3.22.1/bin/ninja.exe" }
-val ndkDir = sdkDir.map { "$it/ndk/29.0.13599879" }
-val toolchainFile = ndkDir.map { "$it/build/cmake/android.toolchain.cmake" }
+// --- 动态定位 SDK 组件（兼容任意版本，自动回退） ---
 
-val buildRoot = layout.buildDirectory
-val javaSrcDir = layout.projectDirectory.dir("src/main/java")
-val cppSrcDir = layout.projectDirectory.dir("src/main/cpp")
-val moduleTemplateDir = layout.projectDirectory.dir("module")
-val dexOutDir = buildRoot.dir("dex")
-val classesOutDir = buildRoot.dir("classes")
-val injectorJarDir = buildRoot.dir("libs")
+// 1. 自动寻找最高版本的 platform android.jar
+val androidJar = providers.provider {
+    val sdk = sdkDir.get()
+    val platformsDir = File(sdk, "platforms")
+    require(platformsDir.exists()) { "SDK platforms 目录不存在: $platformsDir" }
+    val platformDirs = platformsDir.listFiles { file -> file.isDirectory && file.name.startsWith("android-") }
+    require(!platformDirs.isNullOrEmpty()) { "未找到任何 platform 目录" }
+    // 按版本号降序排列（提取数字部分）
+    val sorted = platformDirs.sortedByDescending { dir ->
+        dir.name.substringAfter("android-").toIntOrNull() ?: 0
+    }
+    val chosen = sorted.first()
+    val jarFile = File(chosen, "android.jar")
+    require(jarFile.exists()) { "在 ${chosen.absolutePath} 中未找到 android.jar" }
+    jarFile.absolutePath
+}
+
+// 2. 自动寻找最高版本的 build-tools
+val buildToolsDir = providers.provider {
+    val sdk = sdkDir.get()
+    val btDir = File(sdk, "build-tools")
+    require(btDir.exists()) { "build-tools 目录不存在: $btDir" }
+    val versionDirs = btDir.listFiles { file -> file.isDirectory && file.name.matches(Regex("\\d+\\.\\d+\\.\\d+")) }
+    require(!versionDirs.isNullOrEmpty()) { "未找到任何 build-tools 版本目录" }
+    // 按版本号降序排列
+    val sorted = versionDirs.sortedByDescending { dir ->
+        dir.name.split('.').map { it.toIntOrNull() ?: 0 }
+    }
+    sorted.first().absolutePath
+}
+
+// 3. d8 可执行文件（Windows 下可能是 d8.bat，其他系统为 d8）
+val d8Executable = providers.provider {
+    val btPath = buildToolsDir.get()
+    val btDir = File(btPath)
+    val isWindows = System.getProperty("os.name").startsWith("Windows")
+    // 尝试顺序：优先 d8（Linux/macOS 无后缀，Windows 下也可能是 d8.bat），但 Windows 常为 d8.bat
+    val candidates = if (isWindows) {
+        listOf(File(btDir, "d8.bat"), File(btDir, "d8"))
+    } else {
+        listOf(File(btDir, "d8"))
+    }
+    val d8File = candidates.firstOrNull { it.exists() }
+    requireNotNull(d8File) { "在 $btPath 中未找到 d8 可执行文件（尝试了 ${candidates.map { it.name }}）" }
+    d8File.absolutePath
+}
+
+// 4. 自动寻找最高版本的 CMake
+val cmakeExecutable = providers.provider {
+    val sdk = sdkDir.get()
+    val cmakeBase = File(sdk, "cmake")
+    require(cmakeBase.exists()) { "CMake 目录不存在: $cmakeBase" }
+    val versionDirs = cmakeBase.listFiles { file -> file.isDirectory && file.name.startsWith("3.") }
+    require(!versionDirs.isNullOrEmpty()) { "未找到任何 CMake 版本目录" }
+    // 按版本号降序排列
+    val sorted = versionDirs.sortedByDescending { dir ->
+        dir.name.split('.').map { it.toIntOrNull() ?: 0 }
+    }
+    val chosen = sorted.first()
+    val isWindows = System.getProperty("os.name").startsWith("Windows")
+    val exe = if (isWindows) "cmake.exe" else "cmake"
+    val cmakeFile = File(chosen, "bin/$exe")
+    require(cmakeFile.exists()) { "在 ${chosen.absolutePath}/bin 中未找到 $exe" }
+    cmakeFile.absolutePath
+}
+
+// 5. 自动寻找最高版本的 Ninja（通常与 CMake 同目录）
+val ninjaExecutable = providers.provider {
+    val sdk = sdkDir.get()
+    val cmakeBase = File(sdk, "cmake")
+    require(cmakeBase.exists()) { "CMake 目录不存在: $cmakeBase" }
+    val versionDirs = cmakeBase.listFiles { file -> file.isDirectory && file.name.startsWith("3.") }
+    require(!versionDirs.isNullOrEmpty()) { "未找到任何 CMake 版本目录" }
+    val sorted = versionDirs.sortedByDescending { dir ->
+        dir.name.split('.').map { it.toIntOrNull() ?: 0 }
+    }
+    val chosen = sorted.first()
+    val isWindows = System.getProperty("os.name").startsWith("Windows")
+    val exe = if (isWindows) "ninja.exe" else "ninja"
+    val ninjaFile = File(chosen, "bin/$exe")
+    // 如果当前 CMake 目录下没有 ninja，尝试搜索其他 CMake 目录（回退）
+    if (!ninjaFile.exists()) {
+        // 在所有 CMake 版本目录中查找 ninja
+        val found = versionDirs.map { dir -> File(dir, "bin/$exe") }.firstOrNull { it.exists() }
+        requireNotNull(found) { "在所有 CMake 目录中均未找到 $exe" }
+        return@provider found.absolutePath
+    }
+    ninjaFile.absolutePath
+}
+
+// 6. 自动寻找最高版本的 NDK
+val ndkDir = providers.provider {
+    val sdk = sdkDir.get()
+    val ndkBase = File(sdk, "ndk")
+    require(ndkBase.exists()) { "NDK 目录不存在: $ndkBase" }
+    val versionDirs = ndkBase.listFiles { file -> file.isDirectory }
+    // 过滤出符合版本号格式的目录（如 29.0.13599879）
+    val validDirs = versionDirs?.filter { dir ->
+        dir.name.matches(Regex("\\d+\\.\\d+\\.\\d+"))
+    } ?: emptyList()
+    require(validDirs.isNotEmpty()) { "未找到任何 NDK 版本目录" }
+    // 按版本号降序排列
 val injectorJar = buildRoot.file("libs/wechatmonet-injector.jar")
 val nativeBuildRoot = buildRoot.dir("cmake")
 val nativeLibsRoot = buildRoot.dir("native-libs")
