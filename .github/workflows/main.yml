@@ -49,6 +49,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: magisk-module
-        path: build\outputs\magisk\*.zip      with:
-        name: magisk-module
         path: build\outputs\magisk\*.zip
