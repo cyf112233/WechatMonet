@@ -13,37 +13,36 @@ jobs:
     - name: 拉取代码
       uses: actions/checkout@v4
 
-    # 第一步：使用 JDK 8 运行 sdkmanager
-    - name: 设置 JDK 8
+    # ---------- 第一步：使用 JDK 17 运行 sdkmanager（满足其版本要求） ----------
+    - name: 设置 JDK 17
       uses: actions/setup-java@v4
       with:
-        java-version: '8'
+        java-version: '17'
         distribution: 'temurin'
 
-    # 设置 Android SDK，并自动接受所有许可
-    - name: 设置 Android SDK
+    - name: 设置 Android SDK（不自动接受许可，我们手动处理）
       uses: android-actions/setup-android@v4
       with:
-        accept-licenses: true    # 关键：自动同意许可，避免手动输入
+        accept-android-sdk-licenses: false   # 避免内部版本检查问题
 
-    # 安装所需组件（无需再单独运行 --licenses）
-    - name: 安装 SDK 组件
+    - name: 接受许可并安装所需组件
       shell: cmd
       run: |
+        set SKIP_JDK_VERSION_CHECK=true
+        echo y | sdkmanager --licenses
         sdkmanager "platforms;android-35" "build-tools;37.0.0" "ndk;29.0.13599879" "cmake;3.22.1"
 
-    # 第二步：切换回 JDK 21，用于编译代码（你的 Gradle 需要 --release 21）
+    # ---------- 第二步：切换 JDK 21 用于编译（你的任务需要 --release 21） ----------
     - name: 设置 JDK 21
       uses: actions/setup-java@v4
       with:
         java-version: '21'
         distribution: 'temurin'
-    # 编译 Magisk 模块
-    - name: 编译
+
+    - name: 编译 Magisk 模块
       shell: cmd
       run: .\gradlew.bat packageMagiskModule -Psdk.dir=%ANDROID_HOME% --no-daemon
 
-    # 上传产物
     - name: 上传编译产物
       uses: actions/upload-artifact@v4
       with:
