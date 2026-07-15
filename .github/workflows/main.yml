@@ -38,22 +38,6 @@ jobs:
       with:
         java-version: '21'
         distribution: 'temurin'
-    - name: 修复 CMake 路径
-      shell: cmd
-      run: |
-        REM 查找实际安装的 CMake 目录（版本号可能不同）
-        for /d %%i in (%ANDROID_HOME%\cmake\*) do (
-        if exist "%%i\bin\cmake.exe" (
-        set REAL_CMAKE=%%i
-        goto :found
-        )
-        )
-        :found
-        echo 实际 CMake 路径: %REAL_CMAKE%
-        REM 创建脚本期望的目录（如果不存在）
-        if not exist %ANDROID_HOME%\cmake\3.22.1 mkdir %ANDROID_HOME%\cmake\3.22.1
-        REM 复制 bin 目录（无需管理员权限）
-        xcopy /E /I %REAL_CMAKE%\bin %ANDROID_HOME%\cmake\3.22.1\bin
     # 编译 Magisk 模块
     - name: 编译
       shell: cmd
